@@ -1,0 +1,255 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Scramjet Proxy</title>
+
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            background: #090714;
+            color: #fff;
+            font-family: Inter, Arial, sans-serif;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        header {
+            height: 68px;
+            display: flex;
+            align-items: center;
+            padding: 0 22px;
+            background: #100d1c;
+            border-bottom: 1px solid #292239;
+            gap: 15px;
+        }
+
+        .logo {
+            font-size: 19px;
+            font-weight: 750;
+            color: #c084fc;
+        }
+
+        .status {
+            margin-left: auto;
+            color: #86efac;
+            font-size: 12px;
+        }
+
+        .toolbar {
+            display: flex;
+            padding: 14px;
+            gap: 9px;
+            background: #100d1c;
+        }
+
+        input {
+            flex: 1;
+            min-width: 0;
+            padding: 13px 16px;
+            background: #191527;
+            border: 1px solid #342b48;
+            border-radius: 10px;
+            outline: none;
+            color: white;
+            font-size: 14px;
+        }
+
+        input:focus {
+            border-color: #8b5cf6;
+        }
+
+        button {
+            padding: 0 20px;
+            border: 0;
+            border-radius: 9px;
+            background: #7c3aed;
+            color: white;
+            cursor: pointer;
+            font-weight: 600;
+        }
+
+        button:hover {
+            background: #8b5cf6;
+        }
+
+        main {
+            flex: 1;
+            padding: 12px;
+            min-height: 0;
+        }
+
+        iframe {
+            width: 100%;
+            height: 100%;
+            border: 1px solid #292239;
+            border-radius: 12px;
+            background: white;
+        }
+    </style>
+</head>
+
+<body>
+
+<header>
+    <div class="logo">Scramjet.</div>
+    <div class="status" id="status">Initializing...</div>
+</header>
+
+<div class="toolbar">
+    <input
+        id="url"
+        type="text"
+        placeholder="Enter a website address..."
+    >
+    <button id="go">Go</button>
+</div>
+
+<main>
+    <iframe id="browser"></iframe>
+</main>
+
+<script type="module">
+    const ORACLE_IP = "150.136.98.187";
+
+    const BASE = new URL("./", location.href);
+
+    const status = document.getElementById("status");
+    const input = document.getElementById("url");
+    const browser = document.getElementById("browser");
+
+    const loadScript = (src) => new Promise((resolve, reject) => {
+        const script = document.createElement("script");
+
+        script.src = new URL(src, BASE).href;
+        script.onload = resolve;
+        script.onerror = () => reject(
+            new Error(`Failed to load ${src}`)
+        );
+
+        document.head.appendChild(script);
+    });
+
+    async function initialize() {
+        if (!("serviceWorker" in navigator)) {
+            throw new Error("Service workers are not supported.");
+        }
+
+        const registration = await navigator.serviceWorker.register(
+            new URL("sw.js", BASE),
+            {
+                scope: BASE.pathname,
+                updateViaCache: "none"
+            }
+        );
+
+        await navigator.serviceWorker.ready;
+
+        if (!navigator.serviceWorker.controller) {
+            await new Promise(resolve => {
+                navigator.serviceWorker.addEventListener(
+                    "controllerchange",
+                    resolve,
+                    { once: true }
+                );
+            });
+        }
+
+        const serviceworker =
+            navigator.serviceWorker.controller ??
+            registration.active;
+
+        if (!serviceworker) {
+            throw new Error("Service worker failed to initialize.");
+        }
+
+        await loadScript("scram/scramjet.js");
+        await loadScript("controller/controller.api.js");
+        await loadScript("utils/scramjet-utils.js");
+
+        const api = window.$scramjetController;
+
+        const { default: LibcurlClient } = await import(
+            new URL("libcurl/index.mjs", BASE).href
+        );
+
+        const transport = new LibcurlClient({
+            wisp: `wss://${ORACLE_IP}/wisp/`
+        });
+
+        const controller = new api.Controller({
+            serviceworker,
+            transport,
+            config: {
+                scramjetPath: new URL(
+                    "scram/scramjet.js", BASE
+                ).pathname,
+
+                wasmPath: new URL(
+                    "scram/scramjet.wasm", BASE
+                ).pathname,
+
+                injectPath: new URL(
+                    "controller/controller.inject.js", BASE
+                ).pathname
+            }
+        });
+
+        await controller.wait();
+
+        setInterval(() => {
+            navigator.serviceWorker.controller?.postMessage("keepalive");
+        }, 15000);
+
+        const frame = controller.createFrame(browser);
+
+        document.getElementById("go").addEventListener("click", () => {
+            navigate(frame);
+        });
+
+        input.addEventListener("keydown", event => {
+            if (event.key === "Enter") {
+                navigate(frame);
+            }
+        });
+
+        status.textContent = "Connected";
+    }
+
+    function navigate(frame) {
+        let value = input.value.trim();
+
+        if (!value) return;
+
+        if (!/^https?:\/\//i.test(value)) {
+            value = "https://" + value;
+        }
+
+        try {
+            const parsed = new URL(value);
+
+            if (!["http:", "https:"].includes(parsed.protocol)) {
+                throw new Error("Unsupported URL protocol");
+            }
+
+            frame.go(parsed.href);
+        } catch {
+            status.textContent = "Invalid URL";
+        }
+    }
+
+    initialize().catch(error => {
+        console.error(error);
+        status.textContent = "Connection failed";
+    });
+</script>
+
+</body>
+</html>
